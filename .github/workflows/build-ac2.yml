@@ -1,218 +1,43 @@
-name: Build BeeconMini SEED AC2 Firmware
+name: Build SEED AC2
 
 on:
-  push:
-    branches: [ main, master, develop ]
-    paths:
-      - '.github/workflows/build-ac2.yml'
-      - 'config/seed-ac2/**'
-      - 'patches/**'
-  pull_request:
-    branches: [ main, master ]
-  schedule:
-    - cron: '0 2 * * 1'  # 每周一凌晨2点自动编译
-  workflow_dispatch:     # 手动触发
+  workflow_dispatch:
     inputs:
-      version:
-        description: 'OpenWrt Version'
-        required: true
-        default: '24.10.1'
-        type: choice
-        options:
-        - '23.05.4'
-        - '24.10.1'
-      clean_build:
-        description: 'Clean build (remove previous build files)'
-        required: true
-        default: 'false'
-        type: choice
-        options:
-        - 'true'
-        - 'false'
-      upload_release:
-        description: 'Upload to GitHub Releases'
-        required: true
-        default: 'true'
-        type: choice
-        options:
-        - 'true'
-        - 'false'
-      build_type:
-        description: 'Build type'
-        required: true
-        default: 'standard'
-        type: choice
-        options:
-        - 'standard'
-        - 'minimal'
-        - 'full'
-
-env:
-  TZ: Asia/Shanghai
+      debug:
+        description: 'Enable debug output'
+        type: boolean
+        default: false
 
 jobs:
   build:
     runs-on: ubuntu-22.04
-    timeout-minutes: 180
     
     steps:
-    - name: Checkout source code
-      uses: actions/checkout@v4
-      with:
-        fetch-depth: 0
-        submodules: recursive
-
-    - name: Setup build environment
-      run: |
-        sudo apt-get update
-        sudo apt-get full-upgrade -y
-        sudo apt-get install -y ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential \
-          bzip2 ccache clang cmake cpio curl device-tree-compiler ecj fastjar flex gawk gettext gcc-multilib \
-          g++-multilib git gnutls-dev gperf haveged help2man intltool lib32gcc-s1 libc6-dev-i386 libelf-dev \
-          libglib2.0-dev libgmp3-dev libltdl-dev libmpc-dev libmpfr-dev libncurses-dev libpython3-dev \
-          libreadline-dev libssl-dev libtool libyaml-dev libz-dev lld llvm lrzsz mkisofs msmtp nano \
-          ninja-build p7zip p7zip-full patch pkgconf python3 python3-pip python3-ply python3-docutils \
-          python3-pyelftools qemu-utils re2c rsync scons squashfs-tools subversion swig texinfo uglifyjs \
-          upx-ucl unzip vim wget xmlto xxd zlib1g-dev zstd
-
-    - name: Setup ccache
-      uses: hendrikmuhs/ccache-action@v1.2
-      with:
-        key: ${{ github.ref }}-${{ github.sha }}
-        max-size: 500M
-
-    - name: Clean build (if selected)
-      if: inputs.clean_build == 'true'
-      run: |
-        make distclean || true
-        rm -rf ./tmp ./build_dir ./staging_dir ./bin || true
-
-    - name: Update feeds
+    - uses: actions/checkout@v4
+    
+    - name: Setup environment
+      run: sudo bash -c 'bash <(curl -s https://build-scripts.immortalwrt.org/init_build_environment.sh)'
+      
+    - name: Build firmware
       run: |
         ./scripts/feeds update -a
         ./scripts/feeds install -a
-
-    - name: Configure for SEED AC2
-      run: |
-        # 选择目标平台
-        echo "CONFIG_TARGET_mediatek=y" > .config
-        echo "CONFIG_TARGET_mediatek_filogic=y" >> .config
-        echo "CONFIG_TARGET_mediatek_mt7981=y" >> .config
-        echo "CONFIG_TARGET_mediatek_mt7981_DEVICE_beeconmini_seed-ac2=y" >> .config
         
-        # 基础配置
-        echo "CONFIG_DEVEL=y" >> .config
-        echo "CONFIG_CCACHE=y" >> .config
-        echo "CONFIG_BUILD_LOG=y" >> .config
+        # 静默配置
+        make menuconfig <<CONFIG_EOF
+        /Target: MediaTek Ralink ARM
+        /Subtarget: Filogic 8x0 (MT798x) 
+        /Device: BeeconMini SEED AC2
+        CONFIG_EOF
         
-        # 网络加速
-        echo "CONFIG_KMOD_IPT_OFFLOAD=y" >> .config
-        
-        # 必要驱动
-        echo "CONFIG_PACKAGE_kmod-switch-rtl8373=y" >> .config
-        echo "CONFIG_PACKAGE_kmod-mt7981-firmware=y" >> .config
-        echo "CONFIG_PACKAGE_mt7981-wo-firmware=y" >> .config
-        
-        # 文件系统支持
-        echo "CONFIG_PACKAGE_kmod-fs-f2fs=y" >> .config
-        echo "CONFIG_PACKAGE_kmod-fs-ext4=y" >> .config
-        echo "CONFIG_PACKAGE_mkf2fs=y" >> .config
-        echo "CONFIG_PACKAGE_e2fsprogs=y" >> .config
-        
-        # 根据构建类型添加额外配置
-        if [ "${{ inputs.build_type }}" = "minimal" ]; then
-          echo "CONFIG_PACKAGE_luci=y" >> .config
-        elif [ "${{ inputs.build_type }}" = "full" ]; then
-          echo "CONFIG_PACKAGE_luci=y" >> .config
-          echo "CONFIG_LUCI_LANG_zh_Hans=y" >> .config
-          echo "CONFIG_PACKAGE_luci-app-upnp=y" >> .config
-          echo "CONFIG_PACKAGE_luci-app-wol=y" >> .config
-          echo "CONFIG_PACKAGE_luci-app-ddns=y" >> .config
+        if ${{ inputs.debug }}; then
+          make -j$(nproc) V=sc 2>&1 | tee full-build.log
+        else
+          make -j$(nproc) 2>&1 | grep -E "ERROR|error:|Building|Creating" | tee build-summary.log
         fi
-
-    - name: Show build configuration
-      run: |
-        echo "=== Build Configuration ==="
-        echo "Version: ${{ inputs.version }}"
-        echo "Clean Build: ${{ inputs.clean_build }}"
-        echo "Build Type: ${{ inputs.build_type }}"
-        echo "Upload Release: ${{ inputs.upload_release }}"
-        echo "==========================="
-
-    - name: Build firmware
-      run: |
-        make defconfig
-        make -j$(($(nproc) + 1)) V=s
-
-    - name: Display build info
-      run: |
-        echo "=== Build Results ==="
-        find ./bin/targets -name "*.bin" -o -name "*.img" | head -10
-        echo "====================="
-
-    - name: Upload firmware artifacts
+        
+    - name: Upload results
       uses: actions/upload-artifact@v4
       with:
-        name: seed-ac2-${{ inputs.build_type }}-${{ github.sha }}
-        path: |
-          bin/targets/mediatek/filogic/*.bin
-          bin/targets/mediatek/filogic/*.manifest
-        retention-days: 30
-        compression-level: 0
-
-    - name: Create GitHub Release
-      if: inputs.upload_release == 'true' && (github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/'))
-      uses: softprops/action-gh-release@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        files: bin/targets/mediatek/filogic/*.bin
-        tag_name: seed-ac2-${{ inputs.build_type }}-${{ github.run_id }}
-        release_name: "SEED AC2 ${{ inputs.build_type }} Build #${{ github.run_number }}"
-        body: |
-          ## BeeconMini SEED AC2 Firmware Build
-          
-          **Build Details:**
-          - 🔧 Build Type: `${{ inputs.build_type }}`
-          - 🏷️ Version: `${{ inputs.version }}`
-          - 🚀 Trigger: `${{ github.event_name }}`
-          - 📅 Build Date: `${{ fromJSON(format('"{0}"', toJSON(job.status)) ) }}`
-          - 🔑 Commit: [${{ github.sha }}](https://github.com/${{ github.repository }}/commit/${{ github.sha }})
-          
-          **Features Included:**
-          - ✅ RTL8373 switch support (8x LAN ports)
-          - ✅ Flow offloading acceleration
-          - ✅ F2FS/EXT4 filesystem support
-          - ✅ MT7981 wireless firmware
-          - ✅ Basic/Full package selection
-          
-          **Installation:**
-          1. Download the firmware file
-          2. Flash via ImmortalWrt web interface or sysupgrade
-          3. Configure network interfaces
-          
-          **Network Configuration:**
-          - LAN Ports: lan1-lan8 (via RTL8373 switch)
-          - WAN Port: eth1
-          - Hardware flow offloading enabled by default
-          
-          **Post-install Commands:**
-          ```bash
-          # Enable hardware flow offloading (if not already enabled)
-          uci set firewall.@defaults[0].flow_offloading=1
-          uci set firewall.@defaults[0].flow_offloading_hw=1
-          uci commit firewall
-          /etc/init.d/firewall restart
-          ```
-        draft: false
-        prerelease: false
-
-    - name: Upload build logs
-      if: always()
-      uses: actions/upload-artifact@v4
-      with:
-        name: build-logs-${{ github.run_id }}
-        path: |
-          logs/
-          tmp/
-        retention-days: 7
+        name: firmware-${{ github.run_id }}
+        path: bin/targets/mediatek/filogic/
