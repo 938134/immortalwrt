@@ -236,6 +236,15 @@ platform_do_upgrade() {
 		nand_do_upgrade "$1"
 		;;
 	*)
+	beeconmini,seed-ac1|\
+	beeconmini,seed-ac2|\
+	beeconmini,seed-ac3)
+		CI_KERNPART="kernel"
+		CI_ROOTPART="rootfs"
+		CI_DATAPART="rootfs_data"
+		emmc_do_upgrade "$1"
+		;;
+	*)
 		nand_do_upgrade "$1"
 		;;
 	esac
@@ -256,6 +265,9 @@ platform_check_image() {
 	bananapi,bpi-r4|\
 	bananapi,bpi-r4-2g5|\
 	bananapi,bpi-r4-poe|\
+	beeconmini,seed-ac1|\
+	beeconmini,seed-ac2|\
+	beeconmini,seed-ac3|\
 	cetron,ct3003-ubootmod|\
 	cmcc,a10-ubootmod|\
 	cmcc,rax3000m|\
