@@ -1,0 +1,123 @@
+name: Build BeeconMini SEED AC2 Firmware
+
+on:
+  push:
+    branches: [ main, master ]
+    paths:
+      - '.github/workflows/build-ac2.yml'
+      - 'config/**'
+  pull_request:
+    branches: [ main, master ]
+  schedule:
+    - cron: '0 2 * * 1'  # 每周一凌晨2点自动编译
+  workflow_dispatch:     # 手动触发
+    inputs:
+      version:
+        description: 'OpenWrt Version'
+        required: true
+        default: '24.10.1'
+        type: choice
+        options:
+        - '23.05.4'
+        - '24.10.1'
+
+env:
+  TZ: Asia/Shanghai
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    container:
+      image: immortalwrt/opde:base-22.04
+    
+    steps:
+    - name: Checkout ImmortalWrt source
+      uses: actions/checkout@v4
+      with:
+        repository: immortalwrt/immortalwrt
+        ref: v24.10.1
+        path: immortalwrt
+
+    - name: Checkout device configs
+      uses: actions/checkout@v4
+      with:
+        path: configs
+        sparse-checkout: |
+          config/seed-ac2
+
+    - name: Setup build environment
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential \
+          bzip2 ccache clang cmake cpio curl device-tree-compiler ecj fastjar flex gawk gettext gcc-multilib \
+          g++-multilib git gnutls-dev gperf haveged help2man intltool lib32gcc-s1 libc6-dev-i386 libelf-dev \
+          libglib2.0-dev libgmp3-dev libltdl-dev libmpc-dev libmpfr-dev libncurses-dev libpython3-dev \
+          libreadline-dev libssl-dev libtool libyaml-dev libz-dev lld llvm lrzsz mkisofs msmtp nano \
+          ninja-build p7zip p7zip-full patch pkgconf python3 python3-pip python3-ply python3-docutils \
+          python3-pyelftools qemu-utils re2c rsync scons squashfs-tools subversion swig texinfo uglifyjs \
+          upx-ucl unzip vim wget xmlto xxd zlib1g-dev zstd
+
+    - name: Copy device configuration
+      run: |
+        cp -rf configs/config/seed-ac2/. immortalwrt/
+
+    - name: Update feeds
+      run: |
+        cd immortalwrt
+        ./scripts/feeds update -a
+        ./scripts/feeds install -a
+
+    - name: Configure for SEED AC2
+      run: |
+        cd immortalwrt
+        cat > .config << 'EOF'
+          CONFIG_TARGET_mediatek=y
+          CONFIG_TARGET_mediatek_filogic=y
+          CONFIG_TARGET_mediatek_mt7981=y
+          CONFIG_TARGET_mediatek_mt7981_DEVICE_beeconmini_seed-ac2=y
+          CONFIG_KMOD_IPT_OFFLOAD=y
+          CONFIG_PACKAGE_kmod-switch-rtl8373=y
+          CONFIG_PACKAGE_kmod-mt7981-firmware=y
+          CONFIG_PACKAGE_mt7981-wo-firmware=y
+          CONFIG_PACKAGE_kmod-fs-f2fs=y
+          CONFIG_PACKAGE_kmod-fs-ext4=y
+          CONFIG_PACKAGE_mkf2fs=y
+          CONFIG_PACKAGE_e2fsprogs=y
+          EOF
+
+    - name: Build firmware
+      run: |
+        cd immortalwrt
+        make defconfig
+        make -j$(nproc) V=s
+
+    - name: Upload firmware artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: seed-ac2-firmware
+        path: |
+          immortalwrt/bin/targets/mediatek/filogic/*.bin
+        retention-days: 30
+
+    - name: Create release
+      if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')
+      uses: softprops/action-gh-release@v1
+      with:
+        files: immortalwrt/bin/targets/mediatek/filogic/*.bin
+        tag_name: seed-ac2-${{ github.sha }}
+        release_name: SEED AC2 Build ${{ github.sha }}
+        body: |
+          Automated build of BeeconMini SEED AC2 firmware
+          
+          **Build Details:**
+          - Commit: ${{ github.sha }}
+          - Date: ${{ github.event.head_commit.timestamp }}
+          - Trigger: ${{ github.event_name }}
+          
+          **Included Packages:**
+          - RTL8373 switch support
+          - Flow offloading
+          - F2FS/EXT4 filesystem support
+          - MT7981 firmware
+        draft: false
+        prerelease: false
